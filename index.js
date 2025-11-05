@@ -7,8 +7,6 @@ var os = require('os'),
     tar = require('tar'),
     zlib = require('zlib'),
     path = require('path'),
-    mkdirp = require('mkdirp'),
-    Q = require('q'),
     debug = require('debug')('dynamodb-local');
 
 var JARNAME = 'DynamoDBLocal.jar';
@@ -31,9 +29,7 @@ var runningProcesses = {},
          */
         launch: function (port, dbPath, additionalArgs, verbose = false, detached, javaOpts = '') {
             if (runningProcesses[port]) {
-                return Q.fcall(function () {
-                    return runningProcesses[port];
-                });
+                return Promise.resolve(runningProcesses[port]);
             }
 
             if (!additionalArgs) {
@@ -127,14 +123,10 @@ module.exports = DynamoDbLocal;
 
 function installDynamoDbLocal() {
     debug('Checking for DynamoDB-Local in ', Config.installPath);
-    var filebuf = [];
-    var deferred = Q.defer();
 
     try {
         if (fs.existsSync(path.join(Config.installPath, JARNAME))) {
-            return Q.fcall(function () {
-                return true;
-            });
+            return Promise.resolve(true);
         }
     } catch (e) {
     }
@@ -144,39 +136,38 @@ function installDynamoDbLocal() {
     if (!fs.existsSync(Config.installPath))
         fs.mkdirSync(Config.installPath);
 
-    if (fs.existsSync(Config.downloadUrl)) {
-        debug('Installing from local file:', Config.downloadUrl);
-        filebuf = fs.createReadStream(Config.downloadUrl);
-        filebuf
-            .pipe(zlib.Unzip())
-            .pipe(tar.extract({cwd: Config.installPath}))
-            .on('end', function () {
-                deferred.resolve();
-            })
-            .on('error', function (err) {
-                deferred.reject(err);
-            });
-    }
-    else {
-        https.get(Config.downloadUrl,
-            function (redirectResponse) {
-                if (200 != redirectResponse.statusCode) {
-                    deferred.reject(new Error('Error getting DynamoDb local latest tar.gz location ' +
-                    redirectResponse.headers['location'] + ': ' + redirectResponse.statusCode));
+
+    return new Promise((resolve, reject) => {
+        let stream;
+
+        if (fs.existsSync(Config.downloadUrl)) {
+            debug('Installing from local file:', Config.downloadUrl);
+
+            stream = fs.createReadStream(Config.downloadUrl)
+                .pipe(zlib.Unzip())
+                .pipe(tar.extract({ cwd: Config.installPath }));
+
+            stream.on('end', () => resolve());
+            stream.on('error', err => reject(err));
+        }
+        else {
+            https.get(Config.downloadUrl, redirectResponse => {
+                if (redirectResponse.statusCode !== 200) {
+                    return reject(
+                        new Error(
+                            'Error getting DynamoDb local latest tar.gz location ' +
+                            redirectResponse.headers['location'] + ': ' +
+                            redirectResponse.statusCode
+                        )
+                    );
                 }
+
                 redirectResponse
                     .pipe(zlib.Unzip())
-                    .pipe(tar.extract({cwd: Config.installPath}))
-                    .on('end', function () {
-                        deferred.resolve();
-                    })
-                    .on('error', function (err) {
-                        deferred.reject(err);
-                    });
-            })
-            .on('error', function (e) {
-                deferred.reject(e);
-            });
-    }
-    return deferred.promise;
+                    .pipe(tar.extract({ cwd: Config.installPath }))
+                    .on('end', () => resolve())
+                    .on('error', err => reject(err));
+            }).on('error', e => reject(e));
+        }
+    });
 }
